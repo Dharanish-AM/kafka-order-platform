@@ -14,7 +14,7 @@ scrape_configs:
   - job_name: payment_service
     metrics_path: /metrics
     static_configs:
-      - targets: ["host.docker.internal:9101"]
+      - targets: ["host.docker.internal:9104"]
 
   - job_name: inventory_service
     metrics_path: /metrics

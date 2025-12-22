@@ -36,7 +36,7 @@ npm run start:services
 - Infra: Prometheus, Grafana, and Kafka Exporter run via the same compose file.
 - Service metrics endpoints (host):
 	- Order: http://localhost:9100/metrics
-	- Payment: http://localhost:9101/metrics
+	- Payment: http://localhost:9104/metrics
 	- Inventory: http://localhost:9102/metrics
 	- Notification: http://localhost:9103/metrics
 - Grafana: http://localhost:3000 (admin/admin)
@@ -51,7 +51,7 @@ npm run start:services
 - SERVICE_NAME: logical name reported in logs/metrics
 - PORT: only for Order Service REST API (default: `4000`)
 - PAYMENT_GROUP_ID / INVENTORY_GROUP_ID / NOTIFICATION_GROUP_ID: consumer groups
-- METRICS_PORT: default 9100/9101/9102/9103 per service
+- METRICS_PORT: default 9100/9104/9102/9103 per service
 - KAFKAJS_NO_PARTITIONER_WARNING: set to `1` to silence partitioner warnings
 
 ## Event flow
@@ -70,6 +70,16 @@ Expected log progression:
 - Payment: processed payment, published `payments.completed`
 - Inventory: reserved stock, published `inventory.reserved`
 - Notification: sent notification
+
+### Load generator (simulate traffic)
+Generate continuous orders to exercise services and dashboards:
+```sh
+npm run load -- --rps 20 --duration 120 --concurrency 2 --url http://localhost:4000/order
+```
+- `--rps`: requests per second (default 10)
+- `--duration`: seconds to run (default 60)
+- `--concurrency`: parallel requests per tick (default 1)
+- `--url`: order endpoint (default http://localhost:4000/order)
 
 ## Stop
 ```sh

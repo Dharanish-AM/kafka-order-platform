@@ -31,7 +31,7 @@ echo "[start] Launching services..."
 pids=()
 for svc in "${SERVICES[@]}"; do
   echo "  -> $svc"
-  npm start --prefix "$ROOT_DIR/services/$svc" &
+  npm run dev --prefix "$ROOT_DIR/services/$svc" &
   pids+=("$!")
 done
 
