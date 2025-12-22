@@ -1,0 +1,24 @@
+{
+  "name": "kafka-order-platform",
+  "version": "1.0.0",
+  "description": "An event‑driven microservices demo powered by Kafka and Node.js.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dharanish-AM/kafka-order-platform.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Dharanish-AM/kafka-order-platform/issues"
+  },
+  "homepage": "https://github.com/Dharanish-AM/kafka-order-platform#readme",
+  "dependencies": {
+    "prom-client": "^15.1.3"
+  }
+}

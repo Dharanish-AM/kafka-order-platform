@@ -7,6 +7,17 @@ SERVICES=(order-service payment-service inventory-service notification-service)
 
 export KAFKAJS_NO_PARTITIONER_WARNING=1
 
+echo "[start] Ensuring root 'prom-client' dependency for common/metrics..."
+(
+  cd "$ROOT_DIR"
+  if [ ! -d node_modules/prom-client ]; then
+    if [ ! -f package.json ]; then
+      npm init -y >/dev/null 2>&1 || true
+    fi
+    npm install prom-client@^15.1.0
+  fi
+)
+
 echo "[start] Bringing up Kafka infra..."
 docker compose -f "$COMPOSE_FILE" up -d
 

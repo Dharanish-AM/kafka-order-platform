@@ -5,6 +5,7 @@ const {
   sleep,
   createMonitor,
   registerShutdown,
+  createMetrics,
 } = require("../../common");
 require("dotenv").config();
 
@@ -14,10 +15,13 @@ const config = {
   paymentTopic: process.env.PAYMENT_COMPLETED_TOPIC || "payments.completed",
   inventoryTopic: process.env.INVENTORY_RESERVED_TOPIC || "inventory.reserved",
   consumerGroup: process.env.INVENTORY_GROUP_ID || "inventory-group",
+  metricsPort: parseInt(process.env.METRICS_PORT || "9102", 10),
 };
 
 const log = createLogger(config.serviceName);
 const monitor = createMonitor(config.serviceName, log);
+const metrics = createMetrics(config.serviceName);
+let metricsServer;
 
 const kafka = new Kafka({
   clientId: config.serviceName,
@@ -47,6 +51,8 @@ async function start() {
 
   await consumer.run({
     eachMessage: async ({ message }) => {
+      metrics.inflight.inc();
+      const stopTimer = metrics.handlerDuration.startTimer();
       try {
         const paymentEvent = JSON.parse(message.value.toString());
 
@@ -83,18 +89,34 @@ async function start() {
           topic: config.inventoryTopic,
           event,
         });
+        metrics.consumed.labels(config.paymentTopic).inc();
+        metrics.produced.labels(config.inventoryTopic).inc();
         monitor.event("inventory_reserved", { topic: config.inventoryTopic });
       } catch (error) {
         log("error", "inventory handling failed", { error: error.message });
+        metrics.handlerErrors.labels("inventory").inc();
         monitor.error("inventory_failed", { error: error.message });
+      } finally {
+        metrics.inflight.dec();
+        stopTimer();
       }
     },
   });
+
+  metricsServer = metrics.startServer(config.metricsPort);
 }
 
 registerShutdown(log, [
   () => consumer.disconnect(),
   () => producer.disconnect(),
+  () =>
+    new Promise((resolve) => {
+      if (metricsServer) {
+        metricsServer.close(() => resolve());
+      } else {
+        resolve();
+      }
+    }),
 ]);
 
 start().catch((error) => {

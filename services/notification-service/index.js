@@ -4,6 +4,7 @@ const {
   sleep,
   createMonitor,
   registerShutdown,
+  createMetrics,
 } = require("../../common");
 require("dotenv").config();
 
@@ -12,10 +13,13 @@ const config = {
   kafkaBrokers: (process.env.KAFKA_BROKERS || "localhost:9092").split(","),
   inventoryTopic: process.env.INVENTORY_RESERVED_TOPIC || "inventory.reserved",
   consumerGroup: process.env.NOTIFICATION_GROUP_ID || "notification-group",
+  metricsPort: parseInt(process.env.METRICS_PORT || "9103", 10),
 };
 
 const log = createLogger(config.serviceName);
 const monitor = createMonitor(config.serviceName, log);
+const metrics = createMetrics(config.serviceName);
+let metricsServer;
 
 const kafka = new Kafka({
   clientId: config.serviceName,
@@ -43,6 +47,8 @@ async function start() {
 
   await consumer.run({
     eachMessage: async ({ message }) => {
+      metrics.inflight.inc();
+      const stopTimer = metrics.handlerDuration.startTimer();
       try {
         const event = JSON.parse(message.value.toString());
 
@@ -51,16 +57,33 @@ async function start() {
         await sleep(800);
 
         log("info", "notification sent", { orderId: event.orderId });
+        metrics.consumed.labels(config.inventoryTopic).inc();
         monitor.event("notification_sent", { orderId: event.orderId });
       } catch (error) {
         log("error", "notification handling failed", { error: error.message });
+        metrics.handlerErrors.labels("notification").inc();
         monitor.error("notification_failed", { error: error.message });
+      } finally {
+        metrics.inflight.dec();
+        stopTimer();
       }
     },
   });
+
+  metricsServer = metrics.startServer(config.metricsPort);
 }
 
-registerShutdown(log, [() => consumer.disconnect()]);
+registerShutdown(log, [
+  () => consumer.disconnect(),
+  () =>
+    new Promise((resolve) => {
+      if (metricsServer) {
+        metricsServer.close(() => resolve());
+      } else {
+        resolve();
+      }
+    }),
+]);
 
 start().catch((error) => {
   log("error", "startup failure", { error: error.message });

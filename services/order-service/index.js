@@ -5,6 +5,7 @@ const {
   withRetries,
   createMonitor,
   registerShutdown,
+  createMetrics,
 } = require("../../common");
 require("dotenv").config();
 
@@ -13,10 +14,13 @@ const config = {
   kafkaBrokers: (process.env.KAFKA_BROKERS || "localhost:9092").split(","),
   orderTopic: process.env.ORDER_TOPIC || "orders.created",
   port: parseInt(process.env.PORT || "4000", 10),
+  metricsPort: parseInt(process.env.METRICS_PORT || "9100", 10),
 };
 
 const log = createLogger(config.serviceName);
 const monitor = createMonitor(config.serviceName, log);
+const metrics = createMetrics(config.serviceName);
+let metricsServer;
 
 const app = express();
 app.use(express.json());
@@ -39,6 +43,8 @@ const start = async () => {
 
   app.post("/order", async (req, res) => {
     const order = req.body || {};
+    metrics.inflight.inc();
+    const stopTimer = metrics.handlerDuration.startTimer();
     try {
       await withRetries(
         () =>
@@ -60,20 +66,36 @@ const start = async () => {
       );
 
       log("info", "order published", { topic: config.orderTopic, order });
+      metrics.produced.labels(config.orderTopic).inc();
       monitor.event("order_published", { topic: config.orderTopic });
       res.json({ status: "order published", order });
     } catch (error) {
       log("error", "failed to publish order", { error: error.message, order });
+      metrics.handlerErrors.labels("publish").inc();
       res.status(500).json({ error: "failed to publish order" });
+    } finally {
+      metrics.inflight.dec();
+      stopTimer();
     }
   });
 
   app.listen(config.port, () => {
     log("info", "service listening", { port: config.port });
   });
+  metricsServer = metrics.startServer(config.metricsPort);
 };
 
-registerShutdown(log, [() => producer.disconnect()]);
+registerShutdown(log, [
+  () => producer.disconnect(),
+  () =>
+    new Promise((resolve) => {
+      if (metricsServer) {
+        metricsServer.close(() => resolve());
+      } else {
+        resolve();
+      }
+    }),
+]);
 
 start().catch((error) => {
   log("error", "startup failure", { error: error.message });
