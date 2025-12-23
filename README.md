@@ -1,85 +1,87 @@
 # Kafka Order Platform
 
-An event‑driven microservices demo powered by Kafka and Node.js.
+Event-driven microservices demo on Kafka + Node.js with metrics, retries, and DLQs.
 
-- Order Service: REST API that publishes `orders.created`
-- Payment Service: consumes `orders.created`, publishes `payments.completed`
-- Inventory Service: consumes `payments.completed`, publishes `inventory.reserved`
+## Architecture
+- Order Service: REST API → publishes `orders.created`
+- Payment Service: consumes `orders.created` → publishes `payments.completed`
+- Inventory Service: consumes `payments.completed` → publishes `inventory.reserved`
 - Notification Service: consumes `inventory.reserved`
+- Retry/DLQ: each consumer can forward failures to `<topic>.retry` then `<topic>.dlq` with `x-attempt`/`x-error` headers.
 
 ## Prerequisites
 - Node.js 18+
 - Docker + Docker Compose
 
-## Run the stack
-1) Start Kafka infra
+## Quick start (one command)
 ```sh
-docker compose -f docker/docker-compose.kafka.yml up -d
+./start.sh
 ```
-2) Install dependencies (once per service)
+- Brings up Kafka/ZooKeeper/Prometheus/Grafana/Kafka Exporter
+- Installs per-service dependencies
+- Runs all services with `nodemon`
+
+## Manual start (optional)
 ```sh
+# 1) Infra
+docker compose -f docker/docker-compose.kafka.yml up -d
+
+# 2) Install deps (once)
 npm install --prefix services/order-service
 npm install --prefix services/payment-service
 npm install --prefix services/inventory-service
 npm install --prefix services/notification-service
+
+# 3) Run services (in separate shells)
+npm run dev --prefix services/order-service
+npm run dev --prefix services/payment-service
+npm run dev --prefix services/inventory-service
+npm run dev --prefix services/notification-service
 ```
-3) Start all services (choose one)
-```sh
-# Using npm script defined at the root (if present)
-npm run start:services
-
-# Or use the helper script
-./start.sh
-```
-
-## Monitoring
-- Infra: Prometheus, Grafana, and Kafka Exporter run via the same compose file.
-- Service metrics endpoints (host):
-	- Order: http://localhost:9100/metrics
-	- Payment: http://localhost:9104/metrics
-	- Inventory: http://localhost:9102/metrics
-	- Notification: http://localhost:9103/metrics
-- Grafana: http://localhost:3000 (admin/admin)
-	- Add Prometheus data source: http://localhost:9090 (from your browser)
-	- Or `http://prometheus:9090` when configured inside a Grafana container
-
-## Environment variables (per service)
-- KAFKA_BROKERS: Kafka bootstrap list (default: `localhost:9092`)
-- ORDER_TOPIC: default `orders.created`
-- PAYMENT_COMPLETED_TOPIC: default `payments.completed`
-- INVENTORY_RESERVED_TOPIC: default `inventory.reserved`
-- SERVICE_NAME: logical name reported in logs/metrics
-- PORT: only for Order Service REST API (default: `4000`)
-- PAYMENT_GROUP_ID / INVENTORY_GROUP_ID / NOTIFICATION_GROUP_ID: consumer groups
-- METRICS_PORT: default 9100/9104/9102/9103 per service
-- KAFKAJS_NO_PARTITIONER_WARNING: set to `1` to silence partitioner warnings
-
-## Event flow
-Order → `orders.created` → Payment → `payments.completed` → Inventory → `inventory.reserved` → Notification
 
 ## Smoke test
-Send an order and watch logs flow through all services:
 ```sh
 curl -X POST http://localhost:4000/order \
-	-H "Content-Type: application/json" \
-	-d '{"orderId":"o1","amount":42}'
+  -H "Content-Type: application/json" \
+  -d '{"orderId":"o1","amount":42}'
 ```
+Expected: order → payment → inventory → notification logs; metrics increment on each hop.
 
-Expected log progression:
-- Order: published `orders.created`
-- Payment: processed payment, published `payments.completed`
-- Inventory: reserved stock, published `inventory.reserved`
-- Notification: sent notification
-
-### Load generator (simulate traffic)
-Generate continuous orders to exercise services and dashboards:
+## Load generator
 ```sh
 npm run load -- --rps 20 --duration 120 --concurrency 2 --url http://localhost:4000/order
 ```
-- `--rps`: requests per second (default 10)
-- `--duration`: seconds to run (default 60)
-- `--concurrency`: parallel requests per tick (default 1)
-- `--url`: order endpoint (default http://localhost:4000/order)
+Flags: `--rps` (default 10), `--duration` seconds (default 60), `--concurrency` (default 1), `--url` (default http://localhost:4000/order).
+
+## Observability
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3000 (admin/admin)
+- Kafka Exporter: http://localhost:9308/metrics
+- Service metrics: Order 9100, Payment 9104, Inventory 9102, Notification 9103 (`/metrics` on each)
+- Default Grafana datasource: point to http://localhost:9090 (or `http://prometheus:9090` inside containers)
+
+## Configuration
+Shared:
+- `KAFKA_BROKERS` (default `localhost:9092`)
+- `KAFKAJS_NO_PARTITIONER_WARNING=1` to silence partitioner notice
+
+Topics:
+- `ORDER_TOPIC` (default `orders.created`)
+- `PAYMENT_COMPLETED_TOPIC` (default `payments.completed`)
+- `INVENTORY_RESERVED_TOPIC` (default `inventory.reserved`)
+
+Retry/DLQ (per consumer):
+- `ORDER_RETRY_TOPIC` / `ORDER_DLQ_TOPIC` (defaults `<ORDER_TOPIC>.retry` / `<ORDER_TOPIC>.dlq`)
+- `PAYMENT_RETRY_TOPIC` / `PAYMENT_DLQ_TOPIC`
+- `INVENTORY_RETRY_TOPIC` / `INVENTORY_DLQ_TOPIC`
+- `MAX_PROCESSING_ATTEMPTS` (default 3)
+- `RETRY_DELAYS_MS` comma list (default `1000,5000,15000`)
+
+Per service:
+- `SERVICE_NAME` (log/metric label)
+- `PORT` (Order REST, default 4000)
+- Consumer groups: `PAYMENT_GROUP_ID`, `INVENTORY_GROUP_ID`, `NOTIFICATION_GROUP_ID`
+- `METRICS_PORT` (9100/9104/9102/9103 defaults)
 
 ## Stop
 ```sh
@@ -87,7 +89,7 @@ docker compose -f docker/docker-compose.kafka.yml down
 ```
 
 ## Troubleshooting
-- Kafka unreachable: ensure compose is up and port 9092 is free
-- Consumers not receiving: check consumer groups and topic names match
-- Metrics not visible: confirm service metrics ports (9100–9103) are listening
-- Grafana empty: set Prometheus data source to http://localhost:9090
+- Kafka unreachable: ensure compose is up and port 9092 is free.
+- Exporter target down: rerun compose; exporter waits for Kafka health and restarts automatically.
+- Metrics missing: confirm service metric ports are listening and Prometheus targets are up.
+- Grafana empty: set Prometheus datasource to http://localhost:9090.

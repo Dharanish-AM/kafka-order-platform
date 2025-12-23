@@ -1,0 +1,47 @@
+# Kafka Order Platform – Architecture
+
+```mermaid
+flowchart LR
+  subgraph Producers
+    U[Order API / UI] -->|produce (acks=all, idempotent)| T_main["orders.main (topic)"]
+  end
+
+  subgraph Kafka["Kafka Cluster"]
+    ZK[Zookeeper]
+    B1[Broker 1]
+    ZK --- B1
+    T_main --> B1
+    T_r1["orders.retry.1m (topic)"] --> B1
+    T_r2["orders.retry.5m (topic)"] --> B1
+    T_dlq["orders.dlq (topic)"] --> B1
+  end
+
+  subgraph Consumers
+    OC[OrderConsumer] -->|process| T_main
+    OC -. on error .-> R1[DeadLetterPublishingRecoverer]
+    R1 -->|attempt=0| T_r1
+    R1 -->|attempt=1| T_r2
+    R1 -->|exhausted/non‑retriable| T_dlq
+
+    PS[PaymentService] -->|consume| T_main
+    IS[InventoryService] -->|consume| T_main
+    NS[NotificationService] -->|consume| T_main
+
+    subgraph RetryProcessors
+      OC1[OrderConsumer (retry 1m)] --> T_r1
+      OC2[OrderConsumer (retry 5m)] --> T_r2
+    end
+  end
+
+  subgraph Observability
+    KE[kafka-exporter:9308] --> PR[Prometheus:9090]
+    PR --> GF[Grafana:3000]
+  end
+
+  classDef topic fill:#f3f8ff,stroke:#6aa9ff,stroke-width:1px;
+  class T_main,T_r1,T_r2,T_dlq topic;
+
+  %% Notes:
+  %% - Per-key ordering only within a partition; use stable keys (orderId).
+  %% - Headers: x-attempt, x-error, x-origin-topic/partition/offset.
+```
