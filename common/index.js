@@ -3,6 +3,7 @@ const { withRetries, sleep } = require("./retry");
 const { createMonitor } = require("./monitoring");
 const { registerShutdown } = require("./shutdown");
 const { createMetrics } = require("./metrics");
+const { handleMessageWithRetryDlq } = require("./dlq");
 
 module.exports = {
 	createLogger,
@@ -11,4 +12,5 @@ module.exports = {
 	createMonitor,
 	registerShutdown,
 	createMetrics,
+	handleMessageWithRetryDlq,
 };

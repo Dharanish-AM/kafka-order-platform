@@ -6,8 +6,15 @@ const {
   createMonitor,
   registerShutdown,
   createMetrics,
+  handleMessageWithRetryDlq,
 } = require("../../common");
 require("dotenv").config();
+
+const parseRetryDelays = (value = "") =>
+  value
+    .split(",")
+    .map((item) => Number.parseInt(item.trim(), 10))
+    .filter((num) => !Number.isNaN(num) && num >= 0);
 
 const config = {
   serviceName: process.env.SERVICE_NAME || "inventory-service",
@@ -16,6 +23,16 @@ const config = {
   inventoryTopic: process.env.INVENTORY_RESERVED_TOPIC || "inventory.reserved",
   consumerGroup: process.env.INVENTORY_GROUP_ID || "inventory-group",
   metricsPort: parseInt(process.env.METRICS_PORT || "9102", 10),
+  paymentRetryTopic:
+    process.env.PAYMENT_RETRY_TOPIC ||
+    `${process.env.PAYMENT_COMPLETED_TOPIC || "payments.completed"}.retry`,
+  paymentDlqTopic:
+    process.env.PAYMENT_DLQ_TOPIC ||
+    `${process.env.PAYMENT_COMPLETED_TOPIC || "payments.completed"}.dlq`,
+  maxProcessingAttempts: parseInt(process.env.MAX_PROCESSING_ATTEMPTS || "3", 10),
+  retryDelaysMs: parseRetryDelays(
+    process.env.RETRY_DELAYS_MS || "1000,5000,15000"
+  ),
 };
 
 const log = createLogger(config.serviceName);
@@ -48,50 +65,84 @@ async function start() {
     topic: config.paymentTopic,
     fromBeginning: false,
   });
+  await consumer.subscribe({
+    topic: config.paymentRetryTopic,
+    fromBeginning: false,
+  });
 
   await consumer.run({
-    eachMessage: async ({ message }) => {
+    eachMessage: async (payload) => {
       metrics.inflight.inc();
       const stopTimer = metrics.handlerDuration.startTimer();
       try {
-        const paymentEvent = JSON.parse(message.value.toString());
+        const result = await handleMessageWithRetryDlq({
+          payload,
+          producer,
+          retryTopic: config.paymentRetryTopic,
+          dlqTopic: config.paymentDlqTopic,
+          maxAttempts: config.maxProcessingAttempts,
+          retryDelaysMs: config.retryDelaysMs,
+          log,
+          metrics,
+          handler: async ({ message, attempt }) => {
+            const paymentEvent = JSON.parse(message.value.toString());
 
-        log("info", "reserving inventory", { orderId: paymentEvent.orderId });
+            log("info", "reserving inventory", {
+              orderId: paymentEvent.orderId,
+              attempt,
+            });
 
-        await sleep(1000);
+            await sleep(1000);
 
-        const event = {
-          orderId: paymentEvent.orderId,
-          status: "stock_reserved",
-          reservedAt: Date.now(),
-        };
+            const event = {
+              orderId: paymentEvent.orderId,
+              status: "stock_reserved",
+              reservedAt: Date.now(),
+            };
 
-        await withRetries(
-          () =>
-            producer.send({
+            await withRetries(
+              () =>
+                producer.send({
+                  topic: config.inventoryTopic,
+                  messages: [
+                    {
+                      key: paymentEvent.orderId
+                        ? String(paymentEvent.orderId)
+                        : undefined,
+                      value: JSON.stringify(event),
+                    },
+                  ],
+                }),
+              {
+                retries: 3,
+                delayMs: 200,
+                logger: log,
+                onRetry: (attemptSend, error) =>
+                  log("warn", "producer send retry", {
+                    topic: config.inventoryTopic,
+                    attempt: attemptSend,
+                    error: error.message,
+                  }),
+              }
+            );
+
+            log("info", "inventory reserved event published", {
               topic: config.inventoryTopic,
-              messages: [{ value: JSON.stringify(event) }],
-            }),
-          {
-            retries: 3,
-            delayMs: 200,
-            logger: log,
-            onRetry: (attempt, error) =>
-              log("warn", "producer send retry", {
-                topic: config.inventoryTopic,
-                attempt,
-                error: error.message,
-              }),
-          }
-        );
-
-        log("info", "inventory reserved event published", {
-          topic: config.inventoryTopic,
-          event,
+              event,
+            });
+            metrics.consumed.labels(payload.topic).inc();
+            metrics.produced.labels(config.inventoryTopic).inc();
+            monitor.event("inventory_reserved", {
+              topic: config.inventoryTopic,
+              attempt,
+            });
+          },
         });
-        metrics.consumed.labels(config.paymentTopic).inc();
-        metrics.produced.labels(config.inventoryTopic).inc();
-        monitor.event("inventory_reserved", { topic: config.inventoryTopic });
+
+        if (result.status !== "processed") {
+          metrics.handlerErrors.labels("inventory").inc();
+          monitor.error("inventory_failed", { status: result.status });
+        }
       } catch (error) {
         log("error", "inventory handling failed", { error: error.message });
         metrics.handlerErrors.labels("inventory").inc();
